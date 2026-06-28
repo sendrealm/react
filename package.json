@@ -1,6 +1,6 @@
 {
   "name": "@sendrealm/react",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "React SDK for Sendrealm Web Push notifications.",
   "license": "MIT",
   "type": "module",
