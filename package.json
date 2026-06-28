@@ -1,0 +1,57 @@
+{
+  "name": "@sendrealm/react",
+  "version": "0.0.1",
+  "description": "React SDK for Sendrealm Web Push notifications.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./sendrealm-service-worker.js": "./sendrealm-service-worker.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "sendrealm-service-worker.js",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "sendrealm",
+    "react",
+    "nextjs",
+    "web-push",
+    "push-notifications",
+    "sdk"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "node scripts/build.mjs",
+    "demo": "vite --config demo/vite.config.ts demo --host 0.0.0.0",
+    "demo:build": "vite build --config demo/vite.config.ts demo",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepack:check": "npm run typecheck && npm run test && npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.0",
+    "@types/react": "^18.3.26",
+    "@vitejs/plugin-react": "^5.1.2",
+    "jsdom": "^27.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.1.0",
+    "vitest": "^4.0.16"
+  }
+}
