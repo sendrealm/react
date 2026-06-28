@@ -19,7 +19,7 @@ import type {
   SendrealmWebPushConfig
 } from './types';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
 
 const DEFAULT_BASE_URL = 'https://sdk-api.sendrealm.com';
 const DEFAULT_SERVICE_WORKER_PATH = '/sendrealm-service-worker.js';

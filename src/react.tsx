@@ -42,7 +42,7 @@ const initialState: SendrealmState = {
   userEmail: null,
   platform: 'web',
   environment: 'production',
-  sdkVersion: '0.1.0'
+  sdkVersion: '0.1.1'
 };
 
 const SendrealmContext = createContext<SendrealmContextValue | null>(null);

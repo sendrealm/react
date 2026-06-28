@@ -124,7 +124,7 @@ describe('Sendrealm service worker', () => {
       deviceId: 'device_123',
       baseUrl: 'https://push-api.example.test',
       environment: 'production',
-      sdkVersion: '0.1.0'
+      sdkVersion: '0.1.1'
     });
   }
 

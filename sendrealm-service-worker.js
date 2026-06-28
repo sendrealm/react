@@ -253,7 +253,7 @@ async function trackEvent(eventType, payload, extra) {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-sendrealm-sdk': `sendrealm-react/${config.sdkVersion || '0.1.0'}`
+        'x-sendrealm-sdk': `sendrealm-react/${config.sdkVersion || '0.1.1'}`
       },
       body: JSON.stringify({
         app_id: config.appId,
@@ -263,7 +263,7 @@ async function trackEvent(eventType, payload, extra) {
         notification_id: notificationId,
         properties: Object.keys(properties).length > 0 ? properties : undefined,
         environment: config.environment || 'production',
-        sdk_version: config.sdkVersion || '0.1.0',
+        sdk_version: config.sdkVersion || '0.1.1',
         subscribed: true
       })
     });
