@@ -16,7 +16,11 @@
     "./sendrealm-service-worker.js": "./sendrealm-service-worker.js",
     "./package.json": "./package.json"
   },
+  "bin": {
+    "sendrealm-react": "./bin/sendrealm-react.mjs"
+  },
   "files": [
+    "bin",
     "dist",
     "sendrealm-service-worker.js",
     "README.md"

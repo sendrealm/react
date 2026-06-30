@@ -72,6 +72,17 @@ describe('@sendrealm/react hooks', () => {
     (Notification as any).permission = 'default';
     installServiceWorkerMock();
     vi.mocked(fetch).mockImplementation((_url, initRequest) => {
+      if (String(_url).endsWith('/sendrealm-service-worker.js')) {
+        return Promise.resolve(
+          new Response("const SENDREALM_WORKER_VERSION = '0.1.1';", {
+            status: 200,
+            headers: {
+              'content-type': 'application/javascript'
+            }
+          })
+        );
+      }
+
       const body = JSON.parse(String(initRequest?.body || '{}'));
 
       if (String(_url).endsWith('/v1/init')) {

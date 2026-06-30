@@ -10,6 +10,7 @@ import type {
   SendrealmNotificationOpenResult,
   SendrealmPermissionChangedEvent,
   SendrealmPermissionStatus,
+  SendrealmServiceWorkerCheck,
   SendrealmSilentNotificationEvent,
   SendrealmState,
   SendrealmSubscriptionChangedEvent,
@@ -27,6 +28,8 @@ const DEFAULT_SERVICE_WORKER_SCOPE = '/';
 const DEVICE_STORAGE_PREFIX = 'sendrealm:web:device:';
 const INITIAL_OPEN_STORAGE_KEY = 'sendrealm:web:last-open';
 const SERVICE_WORKER_READY_TIMEOUT_MS = 5000;
+const SERVICE_WORKER_VERSION_PATTERN =
+  /SENDREALM_WORKER_VERSION\s*=\s*['"]([^'"]+)['"]/;
 
 export const SendrealmEvents = {
   notificationClicked: 'Sendrealm:notification_clicked',
@@ -75,6 +78,35 @@ function browserSupported() {
 
 function normalizeBaseUrl(value?: string | null) {
   return (value || DEFAULT_BASE_URL).replace(/\/+$/, '');
+}
+
+function createServiceWorkerCheck(
+  value: Partial<SendrealmServiceWorkerCheck>
+): SendrealmServiceWorkerCheck {
+  return {
+    ok: false,
+    status: value.status || 'unchecked',
+    path: value.path ?? null,
+    expectedVersion: VERSION,
+    detectedVersion: value.detectedVersion ?? null,
+    message: value.message ?? null,
+    ...value
+  };
+}
+
+function getServiceWorkerVersion(source: string) {
+  return source.match(SERVICE_WORKER_VERSION_PATTERN)?.[1] || null;
+}
+
+function looksLikeHtml(response: Response, source: string) {
+  const contentType = response.headers.get('content-type') || '';
+  const trimmed = source.trimStart().toLowerCase();
+
+  return (
+    contentType.toLowerCase().includes('text/html') ||
+    trimmed.startsWith('<!doctype html') ||
+    trimmed.startsWith('<html')
+  );
 }
 
 function getPermissionStatus(): SendrealmPermissionStatus {
@@ -264,6 +296,7 @@ export class SendrealmWebClient {
   private lastInitResult: SendrealmDiagnostics['lastInitResult'] = null;
   private lastRegisterResult: SendrealmDiagnostics['lastRegisterResult'] = null;
   private lastSdkError: SendrealmDiagnostics['lastSdkError'] = null;
+  private lastServiceWorkerCheck: SendrealmServiceWorkerCheck | null = null;
   private lastNotificationPayload: unknown | null = null;
   private lastOpenPayload: unknown | null = null;
   private serviceWorkerMessageBound = false;
@@ -369,6 +402,10 @@ export class SendrealmWebClient {
   }
 
   async getDiagnostics(): Promise<SendrealmDiagnostics> {
+    const serviceWorkerRegistration = await this.getServiceWorkerRegistration(
+      false
+    ).catch(() => null);
+
     return {
       appId: this.options?.appId || null,
       apiUrl: this.options?.baseUrl || null,
@@ -382,6 +419,9 @@ export class SendrealmWebClient {
       subscribed: this.state.subscribed,
       serviceWorkerPath: this.options?.serviceWorkerPath || null,
       serviceWorkerScope: this.options?.serviceWorkerScope || null,
+      activeServiceWorkerScriptURL:
+        serviceWorkerRegistration?.active?.scriptURL || null,
+      serviceWorkerCheck: this.lastServiceWorkerCheck,
       browserSupported: browserSupported(),
       userAgent: hasBrowserApis() ? navigator.userAgent : null,
       locale: readLocale(),
@@ -674,13 +714,9 @@ export class SendrealmWebClient {
     });
 
     this.webPush = init.web_push || null;
-    this.lastInitResult = {
-      success: true,
-      message: null,
-      at: Date.now()
-    };
 
     if (this.webPush) {
+      await this.ensureServiceWorkerFile();
       await this.configureServiceWorker();
     }
 
@@ -692,6 +728,12 @@ export class SendrealmWebClient {
       await this.requestPermission();
     }
 
+    this.lastInitResult = {
+      success: true,
+      message: null,
+      at: Date.now()
+    };
+
     return {
       token: this.state.registrationToken,
       deviceId: this.state.deviceId,
@@ -701,18 +743,135 @@ export class SendrealmWebClient {
     };
   }
 
+  private async checkServiceWorkerFile(): Promise<SendrealmServiceWorkerCheck> {
+    if (!this.options || !hasBrowserApis()) {
+      return createServiceWorkerCheck({
+        ok: false,
+        status: 'unchecked',
+        path: this.options?.serviceWorkerPath || null,
+        message: 'Service worker preflight is only available in a browser.'
+      });
+    }
+
+    const serviceWorkerPath = this.options.serviceWorkerPath;
+
+    try {
+      const url = new URL(serviceWorkerPath, window.location.href);
+
+      if (url.origin !== window.location.origin) {
+        return createServiceWorkerCheck({
+          ok: false,
+          status: 'cross_origin',
+          path: serviceWorkerPath,
+          message:
+            'Sendrealm Web Push service worker must be served from the same origin as your app. Copy it into your public directory with `npx @sendrealm/react setup`.'
+        });
+      }
+
+      const response = await fetch(url.href, {
+        cache: 'no-store',
+        credentials: 'same-origin'
+      });
+      const source = await response.text().catch(() => '');
+
+      if (!response.ok) {
+        return createServiceWorkerCheck({
+          ok: false,
+          status: response.status === 404 ? 'missing' : 'unreachable',
+          path: serviceWorkerPath,
+          message: `Sendrealm service worker was not found at ${serviceWorkerPath}. Run \`npx @sendrealm/react setup\` and deploy the generated public file.`
+        });
+      }
+
+      if (looksLikeHtml(response, source)) {
+        return createServiceWorkerCheck({
+          ok: false,
+          status: 'html',
+          path: serviceWorkerPath,
+          message: `Sendrealm service worker path ${serviceWorkerPath} returned HTML. Run \`npx @sendrealm/react setup\` and make sure your app serves the worker file from its public root.`
+        });
+      }
+
+      const detectedVersion = getServiceWorkerVersion(source);
+
+      if (!detectedVersion && serviceWorkerPath === DEFAULT_SERVICE_WORKER_PATH) {
+        return createServiceWorkerCheck({
+          ok: false,
+          status: 'invalid',
+          path: serviceWorkerPath,
+          message: `Sendrealm service worker path ${serviceWorkerPath} does not look like the bundled worker. Run \`npx @sendrealm/react setup\` to install the current worker.`
+        });
+      }
+
+      if (!detectedVersion) {
+        return createServiceWorkerCheck({
+          ok: true,
+          status: 'custom',
+          path: serviceWorkerPath,
+          message:
+            'Custom service worker detected. Ensure it imports or implements the Sendrealm push handlers.'
+        });
+      }
+
+      if (detectedVersion !== VERSION) {
+        return createServiceWorkerCheck({
+          ok: true,
+          status: 'version_mismatch',
+          path: serviceWorkerPath,
+          detectedVersion,
+          message: `Sendrealm service worker version ${detectedVersion} does not match SDK version ${VERSION}. Run \`npx @sendrealm/react setup\` after upgrading the SDK.`
+        });
+      }
+
+      return createServiceWorkerCheck({
+        ok: true,
+        status: 'ok',
+        path: serviceWorkerPath,
+        detectedVersion,
+        message: null
+      });
+    } catch (error) {
+      return createServiceWorkerCheck({
+        ok: false,
+        status: 'unreachable',
+        path: serviceWorkerPath,
+        message: `Could not verify Sendrealm service worker at ${serviceWorkerPath}: ${getErrorMessage(error)}`
+      });
+    }
+  }
+
+  private async ensureServiceWorkerFile() {
+    const check = await this.checkServiceWorkerFile();
+    this.lastServiceWorkerCheck = check;
+
+    if (!check.ok) {
+      throw new Error(check.message || 'Sendrealm service worker is not ready.');
+    }
+  }
+
   private async configureServiceWorker() {
     const registration = await this.getReadyServiceWorkerRegistration();
-    const activeWorker = registration.active;
-
-    activeWorker?.postMessage({
+    const configMessage = {
       type: 'SENDREALM_CONFIG',
       appId: this.options?.appId,
       deviceId: this.state.deviceId,
       baseUrl: this.options?.baseUrl,
       environment: this.state.environment,
       sdkVersion: VERSION
-    });
+    };
+    const workers = [
+      registration.active,
+      registration.waiting,
+      registration.installing
+    ].filter((worker): worker is ServiceWorker => Boolean(worker));
+
+    for (const worker of workers) {
+      try {
+        worker.postMessage(configMessage);
+      } catch {
+        // The next initialization or worker activation will receive config again.
+      }
+    }
   }
 
   private async updateSubscriptionState(
@@ -864,12 +1023,10 @@ export class SendrealmWebClient {
       return null;
     }
 
-    const existing = await navigator.serviceWorker.getRegistration(
-      this.options.serviceWorkerScope
-    );
-
-    if (existing || !create) {
-      return existing;
+    if (!create) {
+      return navigator.serviceWorker.getRegistration(
+        this.options.serviceWorkerScope
+      );
     }
 
     return navigator.serviceWorker.register(this.options.serviceWorkerPath, {

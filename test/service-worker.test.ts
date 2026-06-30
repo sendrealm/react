@@ -12,6 +12,8 @@ function createWorkerHarness() {
   );
   const matchAll = vi.fn(async (): Promise<any[]> => []);
   const openWindow = vi.fn(async (_url?: string | URL) => undefined);
+  const skipWaiting = vi.fn(async () => undefined);
+  const claim = vi.fn(async () => undefined);
   const fetchMock = vi.fn(
     async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}')
   );
@@ -22,8 +24,10 @@ function createWorkerHarness() {
     },
     clients: {
       matchAll,
-      openWindow
+      openWindow,
+      claim
     },
+    skipWaiting,
     addEventListener(type: string, listener: WorkerListener) {
       const existing = listeners.get(type) || [];
       existing.push(listener);
@@ -44,11 +48,30 @@ function createWorkerHarness() {
     }
   }
 
-  async function dispatchPush(payload: unknown) {
+  async function dispatchPush(payload: unknown, hasData = true) {
+    const event = {
+      data: hasData
+        ? {
+            json: () => payload,
+            text: () => JSON.stringify(payload)
+          }
+        : null,
+      pending: null as Promise<unknown> | null,
+      waitUntil: vi.fn((promise: Promise<unknown>) => {
+        event.pending = Promise.resolve(promise);
+      })
+    };
+
+    await dispatchEvent('push', event);
+  }
+
+  async function dispatchTextPush(text: string) {
     const event = {
       data: {
-        json: () => payload,
-        text: () => JSON.stringify(payload)
+        json: () => {
+          throw new Error('Invalid JSON');
+        },
+        text: () => text
       },
       pending: null as Promise<unknown> | null,
       waitUntil: vi.fn((promise: Promise<unknown>) => {
@@ -59,13 +82,14 @@ function createWorkerHarness() {
     await dispatchEvent('push', event);
   }
 
-  async function dispatchMessage(data: unknown) {
+  async function dispatchMessage(data: unknown, extra: Record<string, unknown> = {}) {
     const event = {
       data,
       pending: null as Promise<unknown> | null,
       waitUntil: vi.fn((promise: Promise<unknown>) => {
         event.pending = Promise.resolve(promise);
-      })
+      }),
+      ...extra
     };
 
     await dispatchEvent('message', event);
@@ -110,9 +134,12 @@ function createWorkerHarness() {
     dispatchNotificationClick,
     dispatchNotificationClose,
     fetchMock,
+    claim,
+    skipWaiting,
     openWindow,
     showNotification,
-    matchAll
+    matchAll,
+    dispatchTextPush
   };
 }
 
@@ -230,6 +257,145 @@ describe('Sendrealm service worker', () => {
       expect.objectContaining({
         body: 'Has a hero image',
         image: imageUrl
+      })
+    );
+  });
+
+  it('shows a visible notification for empty DevTools push test payloads', async () => {
+    const harness = createWorkerHarness();
+
+    await harness.dispatchPush(null, false);
+
+    expect(harness.showNotification).toHaveBeenCalledWith(
+      'Notification',
+      expect.objectContaining({
+        body: ''
+      })
+    );
+  });
+
+  it('responds to version probes', async () => {
+    const harness = createWorkerHarness();
+    const port = {
+      postMessage: vi.fn()
+    };
+
+    await harness.dispatchMessage(
+      {
+        type: 'SENDREALM_GET_VERSION'
+      },
+      {
+        ports: [port]
+      }
+    );
+
+    expect(port.postMessage).toHaveBeenCalledWith({
+      type: 'SENDREALM_WORKER_VERSION',
+      version: '0.1.1'
+    });
+  });
+
+  it('parses sendrealm_v1 when it arrives as a JSON string', async () => {
+    const harness = createWorkerHarness();
+
+    await harness.dispatchPush({
+      sendrealm_v1: JSON.stringify({
+        notification: {
+          title: 'String envelope',
+          body: 'Parsed by the worker'
+        },
+        metadata: {
+          notification_id: 'notif_string'
+        }
+      })
+    });
+
+    expect(harness.showNotification).toHaveBeenCalledWith(
+      'String envelope',
+      expect.objectContaining({
+        body: 'Parsed by the worker',
+        tag: 'notif_string'
+      })
+    );
+  });
+
+  it('falls back to a minimal notification if rich options are rejected', async () => {
+    const harness = createWorkerHarness();
+
+    harness.showNotification
+      .mockRejectedValueOnce(new TypeError('Unsupported rich option'))
+      .mockResolvedValueOnce(undefined);
+
+    await harness.dispatchPush({
+      sendrealm_v1: {
+        notification: {
+          title: 'Rich notification',
+          body: 'Fallback should still show',
+          image: 'https://cdn.example.test/rich.png'
+        },
+        metadata: {
+          notification_id: 'notif_rich'
+        }
+      }
+    });
+
+    expect(harness.showNotification).toHaveBeenCalledTimes(2);
+    expect(harness.showNotification).toHaveBeenNthCalledWith(
+      2,
+      'Rich notification',
+      expect.objectContaining({
+        body: 'Fallback should still show',
+        tag: 'notif_rich',
+        data: expect.any(Object)
+      })
+    );
+    expect(harness.showNotification.mock.calls[1]?.[1]).not.toHaveProperty(
+      'image'
+    );
+  });
+
+  it('still displays when a matched client cannot receive messages', async () => {
+    const harness = createWorkerHarness();
+
+    harness.matchAll.mockResolvedValue([
+      {
+        focused: true,
+        visibilityState: 'visible',
+        postMessage: vi.fn(() => {
+          throw new Error('client is gone');
+        })
+      }
+    ]);
+
+    await harness.dispatchPush({
+      sendrealm_v1: {
+        notification: {
+          title: 'Client failure',
+          body: 'Display still wins'
+        },
+        metadata: {
+          notification_id: 'notif_client_failure'
+        }
+      }
+    });
+
+    expect(harness.showNotification).toHaveBeenCalledWith(
+      'Client failure',
+      expect.objectContaining({
+        body: 'Display still wins'
+      })
+    );
+  });
+
+  it('falls back to a generic notification for non-JSON text payloads', async () => {
+    const harness = createWorkerHarness();
+
+    await harness.dispatchTextPush('not json');
+
+    expect(harness.showNotification).toHaveBeenCalledWith(
+      'Notification',
+      expect.objectContaining({
+        body: ''
       })
     );
   });

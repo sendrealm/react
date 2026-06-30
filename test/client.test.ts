@@ -15,6 +15,17 @@ function jsonResponse(data: unknown) {
   );
 }
 
+function serviceWorkerResponse(source = "const SENDREALM_WORKER_VERSION = '0.1.1';") {
+  return Promise.resolve(
+    new Response(source, {
+      status: 200,
+      headers: {
+        'content-type': 'application/javascript'
+      }
+    })
+  );
+}
+
 function createSubscription(endpoint = 'https://push.example.test/sub-1') {
   return {
     endpoint,
@@ -30,11 +41,19 @@ function createSubscription(endpoint = 'https://push.example.test/sub-1') {
   } as unknown as PushSubscription;
 }
 
-function installServiceWorkerMock(subscription: PushSubscription | null = null) {
+function toAbsoluteUrl(path: string) {
+  return new URL(path, window.location.href).href;
+}
+
+function installServiceWorkerMock(
+  subscription: PushSubscription | null = null,
+  scriptURL = '/sendrealm-service-worker.js'
+) {
   const postMessage = vi.fn();
   const registration = {
     active: {
-      postMessage
+      postMessage,
+      scriptURL: toAbsoluteUrl(scriptURL)
     },
     waiting: null,
     installing: null,
@@ -49,7 +68,10 @@ function installServiceWorkerMock(subscription: PushSubscription | null = null) 
   Object.defineProperty(navigator, 'serviceWorker', {
     value: {
       getRegistration: vi.fn(async () => registration),
-      register: vi.fn(async () => registration),
+      register: vi.fn(async (nextScriptURL: string) => {
+        registration.active.scriptURL = toAbsoluteUrl(nextScriptURL);
+        return registration;
+      }),
       addEventListener: vi.fn(),
       ready: Promise.resolve(registration)
     },
@@ -66,6 +88,10 @@ describe('@sendrealm/react client', () => {
     (Notification as any).permission = 'default';
     installServiceWorkerMock();
     vi.mocked(fetch).mockImplementation((_url, init) => {
+      if (String(_url).endsWith('/sendrealm-service-worker.js')) {
+        return serviceWorkerResponse();
+      }
+
       const body = JSON.parse(String(init?.body || '{}'));
 
       if (String(_url).endsWith('/v1/init')) {
@@ -106,6 +132,114 @@ describe('@sendrealm/react client', () => {
       .mock.calls.filter(([url]) => String(url).endsWith('/v1/init'));
 
     expect(initCalls).toHaveLength(1);
+  });
+
+  it('registers the configured service worker for an existing same-scope registration', async () => {
+    const registration = installServiceWorkerMock(null, '/other-worker.js');
+    const client = new SendrealmWebClient();
+
+    await client.initialize({ appId: 'app_123' });
+
+    expect(navigator.serviceWorker.register).toHaveBeenCalledWith(
+      '/sendrealm-service-worker.js',
+      {
+        scope: '/'
+      }
+    );
+    expect(registration.active.scriptURL).toBe(
+      toAbsoluteUrl('/sendrealm-service-worker.js')
+    );
+    await expect(client.getDiagnostics()).resolves.toMatchObject({
+      activeServiceWorkerScriptURL: toAbsoluteUrl('/sendrealm-service-worker.js'),
+      serviceWorkerCheck: {
+        ok: true,
+        status: 'ok',
+        detectedVersion: '0.1.1'
+      }
+    });
+  });
+
+  it('fails initialization with a setup hint when the worker file is missing', async () => {
+    const client = new SendrealmWebClient();
+
+    vi.mocked(fetch).mockImplementation((_url, init) => {
+      if (String(_url).endsWith('/sendrealm-service-worker.js')) {
+        return Promise.resolve(new Response('', { status: 404 }));
+      }
+
+      const body = JSON.parse(String(init?.body || '{}'));
+
+      if (String(_url).endsWith('/v1/init')) {
+        return jsonResponse({
+          app_id: body.app_id,
+          device_id: body.device_id,
+          platform: 'web',
+          initialized_at: new Date().toISOString(),
+          web_push: {
+            public_key: publicKey,
+            service_worker_path: '/sendrealm-service-worker.js',
+            service_worker_scope: '/'
+          }
+        });
+      }
+
+      return jsonResponse({
+        ok: true
+      });
+    });
+
+    await expect(client.initialize({ appId: 'app_123' })).rejects.toThrow(
+      'npx @sendrealm/react setup'
+    );
+    await expect(client.getDiagnostics()).resolves.toMatchObject({
+      serviceWorkerCheck: {
+        ok: false,
+        status: 'missing'
+      },
+      lastSdkError: {
+        code: 'InitializeFailed'
+      }
+    });
+  });
+
+  it('records a version mismatch without blocking initialization', async () => {
+    const client = new SendrealmWebClient();
+
+    vi.mocked(fetch).mockImplementation((_url, init) => {
+      if (String(_url).endsWith('/sendrealm-service-worker.js')) {
+        return serviceWorkerResponse("const SENDREALM_WORKER_VERSION = '0.0.9';");
+      }
+
+      const body = JSON.parse(String(init?.body || '{}'));
+
+      if (String(_url).endsWith('/v1/init')) {
+        return jsonResponse({
+          app_id: body.app_id,
+          device_id: body.device_id,
+          platform: 'web',
+          initialized_at: new Date().toISOString(),
+          web_push: {
+            public_key: publicKey,
+            service_worker_path: '/sendrealm-service-worker.js',
+            service_worker_scope: '/'
+          }
+        });
+      }
+
+      return jsonResponse({
+        ok: true
+      });
+    });
+
+    await client.initialize({ appId: 'app_123' });
+
+    await expect(client.getDiagnostics()).resolves.toMatchObject({
+      serviceWorkerCheck: {
+        ok: true,
+        status: 'version_mismatch',
+        detectedVersion: '0.0.9'
+      }
+    });
   });
 
   it('subscribes and registers a browser PushSubscription', async () => {

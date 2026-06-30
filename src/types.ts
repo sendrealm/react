@@ -62,6 +62,26 @@ export interface SendrealmSdkError {
   at: number | string;
 }
 
+export type SendrealmServiceWorkerCheckStatus =
+  | 'ok'
+  | 'custom'
+  | 'version_mismatch'
+  | 'missing'
+  | 'html'
+  | 'cross_origin'
+  | 'invalid'
+  | 'unreachable'
+  | 'unchecked';
+
+export interface SendrealmServiceWorkerCheck {
+  ok: boolean;
+  status: SendrealmServiceWorkerCheckStatus;
+  path: string | null;
+  expectedVersion: string;
+  detectedVersion: string | null;
+  message: string | null;
+}
+
 export interface SendrealmDiagnostics {
   appId: string | null;
   apiUrl: string | null;
@@ -75,6 +95,8 @@ export interface SendrealmDiagnostics {
   subscribed: boolean;
   serviceWorkerPath: string | null;
   serviceWorkerScope: string | null;
+  activeServiceWorkerScriptURL: string | null;
+  serviceWorkerCheck: SendrealmServiceWorkerCheck | null;
   browserSupported: boolean;
   userAgent: string | null;
   locale: string | null;

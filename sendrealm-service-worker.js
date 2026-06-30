@@ -4,8 +4,13 @@ const CONFIG_DB_NAME = 'sendrealm-web-push';
 const CONFIG_DB_VERSION = 1;
 const CONFIG_STORE_NAME = 'config';
 const CONFIG_KEY = 'tracking';
+const SENDREALM_WORKER_VERSION = '0.1.1';
 
 let sendrealmConfig = null;
+
+function safeWait(promise) {
+  return Promise.resolve(promise).catch(() => undefined);
+}
 
 function parsePushPayload(event) {
   if (!event.data) {
@@ -24,7 +29,19 @@ function parsePushPayload(event) {
 }
 
 function getSendrealmPayload(payload) {
-  return payload && payload.sendrealm_v1 ? payload.sendrealm_v1 : payload;
+  if (!payload || !payload.sendrealm_v1) {
+    return payload;
+  }
+
+  if (typeof payload.sendrealm_v1 === 'string') {
+    try {
+      return JSON.parse(payload.sendrealm_v1);
+    } catch (_) {
+      return payload;
+    }
+  }
+
+  return payload.sendrealm_v1;
 }
 
 function getMetadata(payload) {
@@ -275,11 +292,42 @@ async function trackEvent(eventType, payload, extra) {
 async function notifyClients(message, clientsList) {
   clientsList = clientsList || (await getWindowClients());
   for (const client of clientsList) {
-    client.postMessage(message);
+    try {
+      client.postMessage(message);
+    } catch (_) {
+      // A stale/unreachable client should not block notification display.
+    }
   }
 }
 
+self.addEventListener('install', event => {
+  if (typeof self.skipWaiting === 'function') {
+    event.waitUntil(safeWait(self.skipWaiting()));
+  }
+});
+
+self.addEventListener('activate', event => {
+  if (self.clients && typeof self.clients.claim === 'function') {
+    event.waitUntil(safeWait(self.clients.claim()));
+  }
+});
+
 self.addEventListener('message', event => {
+  if (event.data?.type === 'SENDREALM_GET_VERSION') {
+    const message = {
+      type: 'SENDREALM_WORKER_VERSION',
+      version: SENDREALM_WORKER_VERSION
+    };
+
+    if (event.ports?.[0]) {
+      event.ports[0].postMessage(message);
+      return;
+    }
+
+    event.source?.postMessage?.(message);
+    return;
+  }
+
   if (event.data?.type === 'SENDREALM_CONFIG') {
     const config = {
       appId: event.data.appId,
@@ -295,6 +343,21 @@ self.addEventListener('message', event => {
     }
   }
 });
+
+async function showNotificationSafely(title, options) {
+  try {
+    await self.registration.showNotification(title, options);
+    return;
+  } catch (_) {
+    const fallbackOptions = {
+      body: options.body || '',
+      tag: options.tag || undefined,
+      data: options.data
+    };
+
+    await self.registration.showNotification(title || 'Notification', fallbackOptions);
+  }
+}
 
 self.addEventListener('push', event => {
   const payload = parsePushPayload(event);
@@ -328,10 +391,7 @@ self.addEventListener('push', event => {
               has_clients: clientVisibility.hasClients
             })
       ];
-
-      await Promise.all([
-        self.registration.showNotification(title, options),
-        ...tracking,
+      const clientNotifications = [
         notifyClients(receivedMessage, clientsList),
         silent
           ? notifyClients(
@@ -344,6 +404,12 @@ self.addEventListener('push', event => {
               clientsList
             )
           : Promise.resolve()
+      ];
+
+      await showNotificationSafely(title, options);
+      await Promise.all([
+        ...tracking.map(safeWait),
+        ...clientNotifications.map(safeWait)
       ]);
     })()
   );
