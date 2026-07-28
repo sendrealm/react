@@ -4,7 +4,7 @@ const CONFIG_DB_NAME = 'sendrealm-web-push';
 const CONFIG_DB_VERSION = 1;
 const CONFIG_STORE_NAME = 'config';
 const CONFIG_KEY = 'tracking';
-const SENDREALM_WORKER_VERSION = '0.1.2';
+const SENDREALM_WORKER_VERSION = '0.1.3';
 
 let sendrealmConfig = null;
 
@@ -270,7 +270,7 @@ async function trackEvent(eventType, payload, extra) {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-sendrealm-sdk': `sendrealm-react/${config.sdkVersion || '0.1.2'}`
+        'x-sendrealm-sdk': `sendrealm-react/${config.sdkVersion || '0.1.3'}`
       },
       body: JSON.stringify({
         app_id: config.appId,
@@ -280,7 +280,7 @@ async function trackEvent(eventType, payload, extra) {
         notification_id: notificationId,
         properties: Object.keys(properties).length > 0 ? properties : undefined,
         environment: config.environment || 'production',
-        sdk_version: config.sdkVersion || '0.1.2',
+        sdk_version: config.sdkVersion || '0.1.3',
         subscribed: true
       })
     });

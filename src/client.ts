@@ -20,7 +20,7 @@ import type {
   SendrealmWebPushConfig
 } from './types';
 
-export const VERSION = '0.1.2';
+export const VERSION = '0.1.3';
 
 const DEFAULT_BASE_URL = 'https://sdk-api.sendrealm.com';
 const DEFAULT_SERVICE_WORKER_PATH = '/sendrealm-service-worker.js';
@@ -410,7 +410,7 @@ export class SendrealmWebClient {
     const subscription = await this.getExistingSubscription();
 
     if (subscription) {
-      await this.registerSubscription(subscription);
+      await this.registerSubscription(subscription, { clearIdentity: true });
     }
   }
 
@@ -1073,7 +1073,10 @@ export class SendrealmWebClient {
     }
   }
 
-  private async registerSubscription(subscription: PushSubscription) {
+  private async registerSubscription(
+    subscription: PushSubscription,
+    { clearIdentity = false }: { clearIdentity?: boolean } = {}
+  ) {
     this.requireInitialized();
 
     const subscriptionJson = subscriptionToJSON(subscription);
@@ -1088,6 +1091,8 @@ export class SendrealmWebClient {
       environment: this.state.environment,
       user_external_id: this.state.externalUserId || undefined,
       user_email: this.state.userEmail || undefined,
+      preserve_user_identity: clearIdentity ? undefined : true,
+      clear_user_identity: clearIdentity || undefined,
       sdk_version: VERSION,
       os_version: navigator.userAgent,
       device_model: 'browser',

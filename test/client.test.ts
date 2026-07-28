@@ -15,7 +15,7 @@ function jsonResponse(data: unknown) {
   );
 }
 
-function serviceWorkerResponse(source = "const SENDREALM_WORKER_VERSION = '0.1.2';") {
+function serviceWorkerResponse(source = "const SENDREALM_WORKER_VERSION = '0.1.3';") {
   return Promise.resolve(
     new Response(source, {
       status: 200,
@@ -179,7 +179,7 @@ describe('@sendrealm/react client', () => {
       serviceWorkerCheck: {
         ok: true,
         status: 'ok',
-        detectedVersion: '0.1.2'
+        detectedVersion: '0.1.3'
       }
     });
   });
@@ -394,6 +394,7 @@ describe('@sendrealm/react client', () => {
     expect(body).toMatchObject({
       app_id: 'app_123',
       platform: 'web',
+      preserve_user_identity: true,
       web_push_subscription: {
         endpoint: 'https://push.example.test/sub-1',
         keys: {
@@ -410,6 +411,42 @@ describe('@sendrealm/react client', () => {
         endpoint: 'https://push.example.test/sub-1'
       }
     });
+  });
+
+  it('preserves an existing identity on initialization and clears it on logout', async () => {
+    const subscription = createSubscription();
+    installServiceWorkerMock(subscription);
+    const client = new SendrealmWebClient();
+
+    await client.initialize({ appId: 'app_123' });
+
+    const initializationRegisterCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([url]) => String(url).endsWith('/v1/register'));
+    const initializationBody = JSON.parse(
+      String(initializationRegisterCall?.[1]?.body || '{}')
+    );
+
+    expect(initializationBody).toMatchObject({
+      preserve_user_identity: true
+    });
+    expect(initializationBody).not.toHaveProperty('clear_user_identity');
+
+    await client.login('persistent-user', 'persistent-user@example.com');
+    await client.logout();
+
+    const registerCalls = vi
+      .mocked(fetch)
+      .mock.calls.filter(([url]) => String(url).endsWith('/v1/register'));
+    const lastRegisterCall = registerCalls[registerCalls.length - 1];
+    const logoutBody = JSON.parse(String(lastRegisterCall?.[1]?.body || '{}'));
+
+    expect(logoutBody).toMatchObject({
+      clear_user_identity: true
+    });
+    expect(logoutBody).not.toHaveProperty('preserve_user_identity');
+    expect(logoutBody).not.toHaveProperty('user_external_id');
+    expect(logoutBody).not.toHaveProperty('user_email');
   });
 
   it('tracks permission changes when requesting permission', async () => {

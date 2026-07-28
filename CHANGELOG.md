@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3 - 2026-07-28
+
+- Preserve a device's linked user identity when an existing browser
+  subscription is registered during a fresh app session.
+- Clear the linked identity only when `logout()` is called explicitly.
+
 ## 0.1.2 - 2026-07-28
 
 - Preserve Safari's permission gesture by creating the push subscription before
