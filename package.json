@@ -29,7 +29,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "sendrealm-react": "./bin/sendrealm-react.mjs"
+    "sendrealm-react": "bin/sendrealm-react.mjs"
   },
   "files": [
     "bin",
