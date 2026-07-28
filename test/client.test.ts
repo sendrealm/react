@@ -15,7 +15,7 @@ function jsonResponse(data: unknown) {
   );
 }
 
-function serviceWorkerResponse(source = "const SENDREALM_WORKER_VERSION = '0.1.1';") {
+function serviceWorkerResponse(source = "const SENDREALM_WORKER_VERSION = '0.1.2';") {
   return Promise.resolve(
     new Response(source, {
       status: 200,
@@ -26,9 +26,16 @@ function serviceWorkerResponse(source = "const SENDREALM_WORKER_VERSION = '0.1.1
   );
 }
 
-function createSubscription(endpoint = 'https://push.example.test/sub-1') {
+function createSubscription(
+  endpoint = 'https://push.example.test/sub-1',
+  applicationServerKey: BufferSource | null = null
+) {
   return {
     endpoint,
+    options: {
+      userVisibleOnly: true,
+      applicationServerKey
+    },
     toJSON: () => ({
       endpoint,
       expirationTime: null,
@@ -51,6 +58,7 @@ function installServiceWorkerMock(
 ) {
   const postMessage = vi.fn();
   const registration = {
+    scope: toAbsoluteUrl('/'),
     active: {
       postMessage,
       scriptURL: toAbsoluteUrl(scriptURL)
@@ -68,10 +76,12 @@ function installServiceWorkerMock(
   Object.defineProperty(navigator, 'serviceWorker', {
     value: {
       getRegistration: vi.fn(async () => registration),
-      register: vi.fn(async (nextScriptURL: string) => {
+      register: vi.fn(async (nextScriptURL: string, options?: RegistrationOptions) => {
         registration.active.scriptURL = toAbsoluteUrl(nextScriptURL);
+        registration.scope = toAbsoluteUrl(options?.scope || '/');
         return registration;
       }),
+      getRegistrations: vi.fn(async () => [registration]),
       addEventListener: vi.fn(),
       ready: Promise.resolve(registration)
     },
@@ -134,11 +144,26 @@ describe('@sendrealm/react client', () => {
     expect(initCalls).toHaveLength(1);
   });
 
-  it('registers the configured service worker for an existing same-scope registration', async () => {
+  it('refuses to replace an unrelated worker at the configured scope', async () => {
     const registration = installServiceWorkerMock(null, '/other-worker.js');
     const client = new SendrealmWebClient();
 
-    await client.initialize({ appId: 'app_123' });
+    await expect(client.initialize({ appId: 'app_123' })).rejects.toThrow(
+      'will not replace it automatically'
+    );
+
+    expect(navigator.serviceWorker.register).not.toHaveBeenCalled();
+    expect(registration.active.scriptURL).toBe(toAbsoluteUrl('/other-worker.js'));
+  });
+
+  it('replaces an unrelated worker only when takeover is explicit', async () => {
+    const registration = installServiceWorkerMock(null, '/other-worker.js');
+    const client = new SendrealmWebClient();
+
+    await client.initialize({
+      appId: 'app_123',
+      allowServiceWorkerReplacement: true
+    });
 
     expect(navigator.serviceWorker.register).toHaveBeenCalledWith(
       '/sendrealm-service-worker.js',
@@ -154,8 +179,108 @@ describe('@sendrealm/react client', () => {
       serviceWorkerCheck: {
         ok: true,
         status: 'ok',
-        detectedVersion: '0.1.1'
+        detectedVersion: '0.1.2'
       }
+    });
+  });
+
+  it('coexists with an existing root push worker by using a dedicated scope', async () => {
+    const existingProviderSubscription = createSubscription(
+      'https://push.example.test/existing-provider',
+      new Uint8Array([1, 2, 3]).buffer
+    );
+    const existingProviderRegistration = {
+      scope: toAbsoluteUrl('/'),
+      active: {
+        postMessage: vi.fn(),
+        scriptURL: toAbsoluteUrl('/existing-push-worker.js')
+      },
+      waiting: null,
+      installing: null,
+      update: vi.fn(),
+      unregister: vi.fn(),
+      pushManager: {
+        getSubscription: vi.fn(async () => existingProviderSubscription),
+        subscribe: vi.fn()
+      }
+    } as unknown as ServiceWorkerRegistration;
+    const sendrealmRegistration = {
+      scope: toAbsoluteUrl('/push/sendrealm/'),
+      active: {
+        postMessage: vi.fn(),
+        scriptURL: toAbsoluteUrl(
+          '/push/sendrealm/sendrealm-service-worker.js'
+        )
+      },
+      waiting: null,
+      installing: null,
+      update: vi.fn(),
+      unregister: vi.fn(),
+      pushManager: {
+        getSubscription: vi.fn(async () => null),
+        subscribe: vi.fn(async () => createSubscription())
+      }
+    } as unknown as ServiceWorkerRegistration;
+    let dedicatedRegistrationCreated = false;
+
+    Object.defineProperty(navigator, 'serviceWorker', {
+      value: {
+        getRegistration: vi.fn(async () =>
+          dedicatedRegistrationCreated
+            ? sendrealmRegistration
+            : existingProviderRegistration
+        ),
+        register: vi.fn(async () => {
+          dedicatedRegistrationCreated = true;
+          return sendrealmRegistration;
+        }),
+        getRegistrations: vi.fn(async () => [
+          existingProviderRegistration,
+          ...(dedicatedRegistrationCreated ? [sendrealmRegistration] : [])
+        ]),
+        addEventListener: vi.fn(),
+        ready: Promise.resolve(existingProviderRegistration)
+      },
+      configurable: true
+    });
+
+    const client = new SendrealmWebClient();
+
+    await client.initialize({
+      appId: 'app_123',
+      serviceWorkerPath: '/push/sendrealm/sendrealm-service-worker.js',
+      serviceWorkerScope: '/push/sendrealm/'
+    });
+    await client.requestPermission();
+
+    expect(navigator.serviceWorker.register).toHaveBeenCalledWith(
+      '/push/sendrealm/sendrealm-service-worker.js',
+      {
+        scope: '/push/sendrealm/'
+      }
+    );
+    expect(existingProviderRegistration.unregister).not.toHaveBeenCalled();
+    expect(existingProviderSubscription.unsubscribe).not.toHaveBeenCalled();
+    expect(
+      existingProviderRegistration.pushManager.getSubscription
+    ).not.toHaveBeenCalled();
+    expect(sendrealmRegistration.pushManager.subscribe).toHaveBeenCalled();
+    await expect(client.getDiagnostics()).resolves.toMatchObject({
+      activeServiceWorkerScriptURL: toAbsoluteUrl(
+        '/push/sendrealm/sendrealm-service-worker.js'
+      ),
+      serviceWorkerRegistrations: [
+        {
+          scope: toAbsoluteUrl('/'),
+          scriptURL: toAbsoluteUrl('/existing-push-worker.js')
+        },
+        {
+          scope: toAbsoluteUrl('/push/sendrealm/'),
+          scriptURL: toAbsoluteUrl(
+            '/push/sendrealm/sendrealm-service-worker.js'
+          )
+        }
+      ]
     });
   });
 
@@ -307,6 +432,70 @@ describe('@sendrealm/react client', () => {
         permission_status: 'authorized'
       }
     });
+  });
+
+  it('subscribes before tracking permission so Safari preserves the user gesture', async () => {
+    const client = new SendrealmWebClient();
+
+    await client.initialize({ appId: 'app_123' });
+    await client.requestPermission();
+
+    const requestPaths = vi.mocked(fetch).mock.calls.map(([url]) =>
+      new URL(String(url)).pathname
+    );
+
+    expect(requestPaths.indexOf('/v1/register')).toBeGreaterThan(-1);
+    expect(requestPaths.indexOf('/v1/register')).toBeLessThan(
+      requestPaths.indexOf('/v1/track')
+    );
+  });
+
+  it('still records granted permission when browser subscription fails', async () => {
+    const registration = installServiceWorkerMock();
+    const client = new SendrealmWebClient();
+
+    vi.mocked(registration.pushManager.subscribe).mockRejectedValue(
+      new Error('Push messaging is disabled')
+    );
+
+    await client.initialize({ appId: 'app_123' });
+    await expect(client.requestPermission()).rejects.toThrow(
+      'Push messaging is disabled'
+    );
+
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => String(url).endsWith('/v1/track'))
+    ).toBe(true);
+  });
+
+  it('replaces an existing subscription created with a different VAPID key', async () => {
+    const previousSubscription = createSubscription(
+      'https://push.example.test/subscriptions/previous-app',
+      new Uint8Array([1, 2, 3]).buffer
+    );
+    const registration = installServiceWorkerMock(previousSubscription);
+    const client = new SendrealmWebClient();
+
+    await client.initialize({ appId: 'app_123' });
+
+    expect(previousSubscription.unsubscribe).toHaveBeenCalledOnce();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => String(url).endsWith('/v1/register'))
+    ).toBe(false);
+
+    vi.mocked(registration.pushManager.getSubscription).mockResolvedValue(null);
+    await client.requestPermission();
+
+    expect(registration.pushManager.subscribe).toHaveBeenCalled();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.some(([url]) => String(url).endsWith('/v1/register'))
+    ).toBe(true);
   });
 
   it('retries browser subscription after a retryable push service failure', async () => {

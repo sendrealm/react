@@ -1,8 +1,20 @@
 {
   "name": "@sendrealm/react",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "React SDK for Sendrealm Web Push notifications.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sendrealm/react.git"
+  },
+  "homepage": "https://docs.sendrealm.com/sdks/react",
+  "bugs": {
+    "url": "https://github.com/sendrealm/react/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "pnpm@10.23.0",
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
@@ -23,7 +35,9 @@
     "bin",
     "dist",
     "sendrealm-service-worker.js",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "sideEffects": false,
   "keywords": [
@@ -41,7 +55,10 @@
     "demo:build": "vite build --config demo/vite.config.ts demo",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "prepack:check": "npm run typecheck && npm run test && npm run build"
+    "prepack": "npm run prepack:check",
+    "prepack:check": "npm run typecheck && npm run test && npm run build",
+    "release:check": "npm run prepack:check && npm run demo:build",
+    "prepublishOnly": "npm run release:check"
   },
   "peerDependencies": {
     "react": ">=18"

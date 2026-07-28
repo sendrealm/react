@@ -151,7 +151,7 @@ describe('Sendrealm service worker', () => {
       deviceId: 'device_123',
       baseUrl: 'https://push-api.example.test',
       environment: 'production',
-      sdkVersion: '0.1.1'
+      sdkVersion: '0.1.2'
     });
   }
 
@@ -291,7 +291,7 @@ describe('Sendrealm service worker', () => {
 
     expect(port.postMessage).toHaveBeenCalledWith({
       type: 'SENDREALM_WORKER_VERSION',
-      version: '0.1.1'
+      version: '0.1.2'
     });
   });
 

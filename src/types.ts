@@ -24,6 +24,7 @@ export interface SendrealmInitializeOptions {
   autoRequestPermission?: boolean;
   serviceWorkerPath?: string;
   serviceWorkerScope?: string;
+  allowServiceWorkerReplacement?: boolean;
   deviceId?: string;
 }
 
@@ -96,6 +97,10 @@ export interface SendrealmDiagnostics {
   serviceWorkerPath: string | null;
   serviceWorkerScope: string | null;
   activeServiceWorkerScriptURL: string | null;
+  serviceWorkerRegistrations: Array<{
+    scope: string;
+    scriptURL: string | null;
+  }>;
   serviceWorkerCheck: SendrealmServiceWorkerCheck | null;
   browserSupported: boolean;
   userAgent: string | null;

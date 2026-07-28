@@ -22,11 +22,28 @@ export default defineConfig({
     {
       name: 'sendrealm-service-worker',
       configureServer(server) {
-        server.middlewares.use('/sendrealm-service-worker.js', (_req, res) => {
+        const serveSendrealmWorker = (_req, res) => {
           res.setHeader('content-type', 'application/javascript; charset=utf-8');
           res.setHeader('cache-control', 'no-store');
           res.setHeader('service-worker-allowed', '/');
           fs.createReadStream(serviceWorkerPath).pipe(res);
+        };
+
+        server.middlewares.use(
+          '/sendrealm-service-worker.js',
+          serveSendrealmWorker
+        );
+        server.middlewares.use(
+          '/push/sendrealm/sendrealm-service-worker.js',
+          serveSendrealmWorker
+        );
+        server.middlewares.use('/existing-push-worker.js', (_req, res) => {
+          res.setHeader('content-type', 'application/javascript; charset=utf-8');
+          res.setHeader('cache-control', 'no-store');
+          res.setHeader('service-worker-allowed', '/');
+          res.end(
+            '/* Existing push worker fixture */ self.addEventListener("install", event => event.waitUntil(self.skipWaiting())); self.addEventListener("activate", event => event.waitUntil(self.clients.claim())); self.addEventListener("push", () => {});'
+          );
         });
         server.middlewares.use('/manifest.webmanifest', (_req, res) => {
           res.setHeader('content-type', 'application/manifest+json; charset=utf-8');

@@ -11,6 +11,8 @@ import {
 interface DemoAppProps {
   appId: string;
   baseUrl: string;
+  serviceWorkerPath?: string;
+  serviceWorkerScope?: string;
 }
 
 type LogEntry = {
@@ -19,7 +21,12 @@ type LogEntry = {
   detail?: unknown;
 };
 
-export function DemoApp({ appId, baseUrl }: DemoAppProps) {
+export function DemoApp({
+  appId,
+  baseUrl,
+  serviceWorkerPath,
+  serviceWorkerScope
+}: DemoAppProps) {
   const { client, state, initializing, error } = useSendrealm();
   const { permissionStatus, requestPermission } = useSendrealmPermission();
   const { subscribed, token, optIn, optOut, refreshRegistrationToken } =
@@ -59,12 +66,14 @@ export function DemoApp({ appId, baseUrl }: DemoAppProps) {
     void init({
       appId,
       baseUrl,
-      autoRequestPermission: false
+      autoRequestPermission: false,
+      serviceWorkerPath,
+      serviceWorkerScope
     }).catch(nextError => {
       appendLog('init failed', String((nextError as Error)?.message || nextError));
       console.error(nextError);
     });
-  }, [appId, baseUrl]);
+  }, [appId, baseUrl, serviceWorkerPath, serviceWorkerScope]);
 
   async function runAction(label: string, action: () => Promise<unknown>) {
     try {
@@ -257,6 +266,21 @@ export function DemoApp({ appId, baseUrl }: DemoAppProps) {
             <Field label="Permission" value={permissionStatus} />
             <Field label="Token" value={token || 'none'} />
             <Field label="Environment" value={state.environment} />
+            <Field
+              label="Workers"
+              value={
+                diagnostics?.serviceWorkerRegistrations
+                  .map(registration => {
+                    const scope = new URL(registration.scope).pathname;
+                    const script = registration.scriptURL
+                      ? new URL(registration.scriptURL).pathname
+                      : 'inactive';
+
+                    return `${scope} -> ${script}`;
+                  })
+                  .join(' | ') || 'none'
+              }
+            />
           </dl>
 
           <div className="supportGrid">

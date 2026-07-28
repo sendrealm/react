@@ -74,7 +74,7 @@ describe('@sendrealm/react hooks', () => {
     vi.mocked(fetch).mockImplementation((_url, initRequest) => {
       if (String(_url).endsWith('/sendrealm-service-worker.js')) {
         return Promise.resolve(
-          new Response("const SENDREALM_WORKER_VERSION = '0.1.1';", {
+          new Response("const SENDREALM_WORKER_VERSION = '0.1.2';", {
             status: 200,
             headers: {
               'content-type': 'application/javascript'

@@ -20,7 +20,7 @@ import type {
   SendrealmWebPushConfig
 } from './types';
 
-export const VERSION = '0.1.1';
+export const VERSION = '0.1.2';
 
 const DEFAULT_BASE_URL = 'https://sdk-api.sendrealm.com';
 const DEFAULT_SERVICE_WORKER_PATH = '/sendrealm-service-worker.js';
@@ -96,6 +96,37 @@ function createServiceWorkerCheck(
 
 function getServiceWorkerVersion(source: string) {
   return source.match(SERVICE_WORKER_VERSION_PATTERN)?.[1] || null;
+}
+
+function normalizeServiceWorkerUrl(value: string) {
+  return new URL(value, window.location.href).href;
+}
+
+function registrationMatchesScope(
+  registration: ServiceWorkerRegistration,
+  scope: string
+) {
+  return (
+    normalizeServiceWorkerUrl(registration.scope) ===
+    normalizeServiceWorkerUrl(scope)
+  );
+}
+
+function registrationUsesScript(
+  registration: ServiceWorkerRegistration,
+  scriptPath: string
+) {
+  const expectedScriptUrl = new URL(scriptPath, window.location.href).href;
+  const workerScriptUrls = [
+    registration.active?.scriptURL,
+    registration.waiting?.scriptURL,
+    registration.installing?.scriptURL
+  ].filter((value): value is string => Boolean(value));
+
+  return (
+    workerScriptUrls.length === 0 ||
+    workerScriptUrls.every(scriptUrl => scriptUrl === expectedScriptUrl)
+  );
 }
 
 function looksLikeHtml(response: Response, source: string) {
@@ -177,6 +208,34 @@ function urlBase64ToArrayBuffer(base64String: string) {
   );
 }
 
+function subscriptionUsesPublicKey(
+  subscription: PushSubscription,
+  publicKey: string
+) {
+  const existingKey = subscription.options?.applicationServerKey;
+
+  // Older implementations may not expose the key used by an existing
+  // subscription. In that case, preserve the subscription instead of forcing
+  // users to opt in again on every initialization.
+  if (!existingKey) {
+    return true;
+  }
+
+  const expectedBytes = new Uint8Array(urlBase64ToArrayBuffer(publicKey));
+  const existingBytes = ArrayBuffer.isView(existingKey)
+    ? new Uint8Array(
+        existingKey.buffer,
+        existingKey.byteOffset,
+        existingKey.byteLength
+      )
+    : new Uint8Array(existingKey);
+
+  return (
+    existingBytes.byteLength === expectedBytes.byteLength &&
+    existingBytes.every((value, index) => value === expectedBytes[index])
+  );
+}
+
 function delay(milliseconds: number) {
   return new Promise(resolve => {
     window.setTimeout(resolve, milliseconds);
@@ -221,7 +280,7 @@ function enhancePushSubscribeError(error: unknown) {
   }
 
   return new Error(
-    `${message}. The browser push service could not create a subscription after the service worker became ready and was re-registered. Open the demo in a full Chrome, Edge, or Safari browser with push messaging enabled; embedded Chromium browsers can expose PushManager without a working push service.`
+    `${message}. The browser push service could not create a subscription after the service worker became ready and was re-registered. Open the demo in a full Chrome, Edge, Brave, Firefox, or Safari browser with push messaging enabled; embedded browsers can expose PushManager without a working push service.`
   );
 }
 
@@ -269,12 +328,22 @@ export class SendrealmWebClient {
   private options: Required<
     Pick<
       SendrealmInitializeOptions,
-      'appId' | 'baseUrl' | 'environment' | 'serviceWorkerPath' | 'serviceWorkerScope'
+      | 'appId'
+      | 'baseUrl'
+      | 'environment'
+      | 'serviceWorkerPath'
+      | 'serviceWorkerScope'
+      | 'allowServiceWorkerReplacement'
     >
   > &
     Omit<
       SendrealmInitializeOptions,
-      'appId' | 'baseUrl' | 'environment' | 'serviceWorkerPath' | 'serviceWorkerScope'
+      | 'appId'
+      | 'baseUrl'
+      | 'environment'
+      | 'serviceWorkerPath'
+      | 'serviceWorkerScope'
+      | 'allowServiceWorkerReplacement'
     > | null = null;
   private state: SendrealmState = {
     initialized: false,
@@ -352,14 +421,27 @@ export class SendrealmWebClient {
     const result = await Notification.requestPermission();
     const granted = result === 'granted';
 
+    // Safari expects subscription to follow the user gesture directly. Do not
+    // put analytics or other network work between the permission result and
+    // PushManager.subscribe().
+    let subscriptionError: unknown;
+
+    if (granted) {
+      try {
+        await this.optIn();
+      } catch (error) {
+        subscriptionError = error;
+      }
+    }
+
     await this.applyPermissionStatus(getPermissionStatus(), {
       previousStatus,
       forceEmit: true,
       trackServerEvent: true
     });
 
-    if (granted) {
-      await this.optIn();
+    if (subscriptionError) {
+      throw subscriptionError;
     }
 
     return granted;
@@ -405,6 +487,19 @@ export class SendrealmWebClient {
     const serviceWorkerRegistration = await this.getServiceWorkerRegistration(
       false
     ).catch(() => null);
+    const serviceWorkerRegistrations =
+      browserSupported() &&
+      typeof navigator.serviceWorker.getRegistrations === 'function'
+      ? await navigator.serviceWorker
+          .getRegistrations()
+          .then(registrations =>
+            registrations.map(registration => ({
+              scope: registration.scope,
+              scriptURL: registration.active?.scriptURL || null
+            }))
+          )
+          .catch(() => [])
+      : [];
 
     return {
       appId: this.options?.appId || null,
@@ -421,6 +516,7 @@ export class SendrealmWebClient {
       serviceWorkerScope: this.options?.serviceWorkerScope || null,
       activeServiceWorkerScriptURL:
         serviceWorkerRegistration?.active?.scriptURL || null,
+      serviceWorkerRegistrations,
       serviceWorkerCheck: this.lastServiceWorkerCheck,
       browserSupported: browserSupported(),
       userAgent: hasBrowserApis() ? navigator.userAgent : null,
@@ -677,7 +773,9 @@ export class SendrealmWebClient {
       baseUrl: normalizeBaseUrl(input.baseUrl),
       environment: input.environment || 'production',
       serviceWorkerPath: input.serviceWorkerPath || DEFAULT_SERVICE_WORKER_PATH,
-      serviceWorkerScope: input.serviceWorkerScope || DEFAULT_SERVICE_WORKER_SCOPE
+      serviceWorkerScope: input.serviceWorkerScope || DEFAULT_SERVICE_WORKER_SCOPE,
+      allowServiceWorkerReplacement:
+        input.allowServiceWorkerReplacement ?? false
     };
     const deviceId =
       input.deviceId || getStoredDeviceId(options.appId) || generateDeviceId();
@@ -697,7 +795,7 @@ export class SendrealmWebClient {
     this.bindServiceWorkerMessages();
     this.bindPageLifecycleObservers();
 
-    const existingSubscription = await this.getExistingSubscription();
+    let existingSubscription = await this.getExistingSubscription();
     const init = await this.requestApi<InitResponse>('/v1/init', {
       app_id: options.appId,
       device_id: deviceId,
@@ -718,6 +816,18 @@ export class SendrealmWebClient {
     if (this.webPush) {
       await this.ensureServiceWorkerFile();
       await this.configureServiceWorker();
+
+      if (
+        existingSubscription &&
+        !subscriptionUsesPublicKey(
+          existingSubscription,
+          this.webPush.public_key
+        )
+      ) {
+        await existingSubscription.unsubscribe();
+        existingSubscription = null;
+        await this.updateSubscriptionState(false);
+      }
     }
 
     if (existingSubscription) {
@@ -902,8 +1012,12 @@ export class SendrealmWebClient {
     const registration = await this.getReadyServiceWorkerRegistration();
     const existing = await registration.pushManager.getSubscription();
 
-    if (existing) {
+    if (existing && subscriptionUsesPublicKey(existing, this.webPush.public_key)) {
       return existing;
+    }
+
+    if (existing) {
+      await existing.unsubscribe();
     }
 
     const createSubscribeOptions = (): PushSubscriptionOptionsInit => ({
@@ -1023,9 +1137,33 @@ export class SendrealmWebClient {
       return null;
     }
 
-    if (!create) {
-      return navigator.serviceWorker.getRegistration(
+    const existingRegistration =
+      await navigator.serviceWorker.getRegistration(
         this.options.serviceWorkerScope
+      );
+    const exactRegistration =
+      existingRegistration &&
+      registrationMatchesScope(
+        existingRegistration,
+        this.options.serviceWorkerScope
+      )
+        ? existingRegistration
+        : null;
+
+    if (!create) {
+      return exactRegistration;
+    }
+
+    if (
+      exactRegistration &&
+      !registrationUsesScript(
+        exactRegistration,
+        this.options.serviceWorkerPath
+      ) &&
+      !this.options.allowServiceWorkerReplacement
+    ) {
+      throw new Error(
+        `Service worker scope ${this.options.serviceWorkerScope} is already controlled by ${exactRegistration.active?.scriptURL || 'another service worker'}. Sendrealm will not replace it automatically. When coexisting with another push SDK, install Sendrealm at a dedicated path and scope such as /push/sendrealm/sendrealm-service-worker.js and /push/sendrealm/. Set allowServiceWorkerReplacement only for an intentional takeover.`
       );
     }
 
@@ -1039,8 +1177,36 @@ export class SendrealmWebClient {
   ) {
     const registration =
       fallbackRegistration || (await this.getServiceWorkerRegistration());
+
+    if (registration.active) {
+      return registration;
+    }
+
+    const pendingWorker = registration.installing || registration.waiting;
+
+    if (!pendingWorker) {
+      return registration;
+    }
+
     const readyRegistration = await withTimeout(
-      navigator.serviceWorker.ready,
+      new Promise<ServiceWorkerRegistration>(resolve => {
+        const resolveWhenSettled = () => {
+          if (
+            registration.active ||
+            pendingWorker.state === 'activated' ||
+            pendingWorker.state === 'redundant'
+          ) {
+            pendingWorker.removeEventListener(
+              'statechange',
+              resolveWhenSettled
+            );
+            resolve(registration);
+          }
+        };
+
+        pendingWorker.addEventListener('statechange', resolveWhenSettled);
+        resolveWhenSettled();
+      }),
       SERVICE_WORKER_READY_TIMEOUT_MS
     );
 
@@ -1300,7 +1466,9 @@ export class SendrealmWebClient {
 
   private requireBrowserSupport() {
     if (!browserSupported()) {
-      throw new Error('Sendrealm Web Push requires window, Notification, serviceWorker, and PushManager browser APIs.');
+      throw new Error(
+        'Sendrealm Web Push requires a secure context with Notification, serviceWorker, and PushManager browser APIs. On iPhone and iPad, open the installed Home Screen web app; in other browsers, enable site notifications and push messaging.'
+      );
     }
   }
 
